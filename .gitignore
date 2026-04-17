@@ -1,0 +1,27 @@
+# Binaries
+bin/
+server
+*.exe
+*.test
+*.prof
+
+# Environment variables (Sensitive)
+.env
+.env.local
+
+# Build artifacts
+dist/
+
+# Dependencies
+vendor/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Large log files
+*.log
+
+# Workspace
+.vscode/
+.idea/
