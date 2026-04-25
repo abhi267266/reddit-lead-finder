@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abhi267266/reddit-lead-finder/internal/api"
 	"github.com/abhi267266/reddit-lead-finder/internal/config"
 	"github.com/abhi267266/reddit-lead-finder/internal/db"
 	"github.com/abhi267266/reddit-lead-finder/internal/poller"
@@ -62,10 +63,13 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
+
+	// Register API routes
+	api.RegisterRoutes(mux, pool, cfg)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

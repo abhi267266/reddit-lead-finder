@@ -5,86 +5,81 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/abhi267266/reddit-lead-finder/internal/models"
+	"github.com/abhi267266/reddit-lead-finder/internal/db"
 	"github.com/abhi267266/reddit-lead-finder/internal/reddit"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 )
 
-func StartScheduler(ctx context.Context, db *pgxpool.Pool, redditClient *reddit.Client) error {
+func StartScheduler(ctx context.Context, pool *pgxpool.Pool, redditClient *reddit.Client) error {
+	queries := db.New(pool)
+	
 	// Initialize jobs for all active campaigns that don't have one
 	const initJobs = `
 		INSERT INTO jobs (campaign_id, status)
 		SELECT id, 'pending' FROM campaigns WHERE active = true
 		ON CONFLICT (campaign_id) DO NOTHING
 	`
-	if _, err := db.Exec(ctx, initJobs); err != nil {
+	if _, err := pool.Exec(ctx, initJobs); err != nil {
 		slog.Error("failed to initialize jobs", "error", err)
 		return err
 	}
 
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-
 	// Wait for workers to finish
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(10)
+
+	// Trigger the first poll immediately
+	pollJobs(ctx, pool, queries, redditClient, g)
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return g.Wait()
 		case <-ticker.C:
-			pollJobs(ctx, db, redditClient, g)
+			pollJobs(ctx, pool, queries, redditClient, g)
 		}
 	}
 }
 
-func pollJobs(ctx context.Context, db *pgxpool.Pool, redditClient *reddit.Client, g *errgroup.Group) {
-	const selectJobs = `
-		SELECT j.id, j.status, c.id, c.subreddits, c.keywords, c.schedule_minutes 
-		FROM jobs j
-		JOIN campaigns c ON c.id = j.campaign_id
-		WHERE j.next_run_at <= NOW() AND j.status != 'running' AND c.active = true
-	`
-
-	rows, err := db.Query(ctx, selectJobs)
+func pollJobs(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, redditClient *reddit.Client, g *errgroup.Group) {
+	jobs, err := queries.ListDueJobs(ctx)
 	if err != nil {
 		slog.Error("failed querying due jobs", "error", err)
 		return
 	}
-	defer rows.Close()
 
-	type dueJob struct {
-		Job      models.Job
-		Campaign models.Campaign
-	}
-	var dueJobs []dueJob
-
-	for rows.Next() {
-		var j models.Job
-		var c models.Campaign
-		err := rows.Scan(&j.ID, &j.Status, &c.ID, &c.Subreddits, &c.Keywords, &c.ScheduleMinutes)
-		if err != nil {
-			slog.Error("failed to scan job row", "error", err)
-			continue
-		}
-		dueJobs = append(dueJobs, dueJob{Job: j, Campaign: c})
-	}
-
-	for _, dj := range dueJobs {
+	for _, j := range jobs {
 		// Mark as running
-		_, err := db.Exec(ctx, "UPDATE jobs SET status = 'running', updated_at = NOW() WHERE id = $1", dj.Job.ID)
+		_, err := pool.Exec(ctx, "UPDATE jobs SET status = 'running', updated_at = NOW() WHERE id = $1", j.ID)
 		if err != nil {
-			slog.Error("failed to lock job", "job_id", dj.Job.ID, "error", err)
+			slog.Error("failed to lock job", "job_id", j.ID, "error", err)
 			continue
 		}
 
-		job := dj.Job
-		campaign := dj.Campaign
+		// Convert sqlc row to models (or just pass the row if compatible)
+		job := db.Job{
+			ID:         j.ID,
+			CampaignID: j.CampaignID,
+			Status:     "running",
+		}
+		campaign := db.Campaign{
+			ID:                 j.CampaignID,
+			Name:               j.Name,
+			Keywords:           j.Keywords,
+			Subreddits:         j.Subreddits,
+			ProductDescription: j.ProductDescription,
+			ScheduleMinutes:    j.ScheduleMinutes,
+			MinUpvotes:         j.MinUpvotes,
+			MinComments:        j.MinComments,
+			MaxAgeDays:         j.MaxAgeDays,
+		}
 
 		g.Go(func() error {
-			RunCampaign(ctx, db, redditClient, campaign, job)
+			RunCampaign(ctx, pool, queries, redditClient, campaign, job)
 			return nil
 		})
 	}

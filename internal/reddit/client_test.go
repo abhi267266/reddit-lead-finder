@@ -61,7 +61,7 @@ func TestClient_SearchSubreddit(t *testing.T) {
 	}
 }
 
-func TestClient_GetNewPosts(t *testing.T) {
+func TestClient_GetHotPosts(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/access_token", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -70,7 +70,7 @@ func TestClient_GetNewPosts(t *testing.T) {
 		})
 	})
 
-	mux.HandleFunc("/r/testsub/new", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/r/testsub/hot", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer mock_token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -78,7 +78,7 @@ func TestClient_GetNewPosts(t *testing.T) {
 		resp := ListingResponse{
 			Data: ListingData{
 				Children: []PostChild{
-					{Data: Post{ID: "456", Title: "new post"}},
+					{Data: Post{ID: "456", Title: "hot post"}},
 				},
 			},
 		}
@@ -98,9 +98,9 @@ func TestClient_GetNewPosts(t *testing.T) {
 	client.authURL = server.URL + "/api/v1/access_token"
 	client.baseURL = server.URL
 
-	posts, err := client.GetNewPosts(context.Background(), "testsub")
+	posts, err := client.GetHotPosts(context.Background(), "testsub")
 	if err != nil {
-		t.Fatalf("GetNewPosts error: %v", err)
+		t.Fatalf("GetHotPosts error: %v", err)
 	}
 
 	if len(posts) != 1 || posts[0].ID != "456" {
@@ -111,7 +111,7 @@ func TestClient_GetNewPosts(t *testing.T) {
 func TestClient_GuestFallback(t *testing.T) {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/r/guestsub/new.json", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/r/guestsub/hot.json", func(w http.ResponseWriter, r *http.Request) {
 		// There should be NO Authorization header in guest mode
 		if r.Header.Get("Authorization") != "" {
 			t.Errorf("Expected no Authorization header in guest mode")
@@ -137,9 +137,9 @@ func TestClient_GuestFallback(t *testing.T) {
 	client := NewClient(cfg)
 	client.baseURL = server.URL // Override to local httptest server
 
-	posts, err := client.GetNewPosts(context.Background(), "guestsub")
+	posts, err := client.GetHotPosts(context.Background(), "guestsub")
 	if err != nil {
-		t.Fatalf("GetNewPosts (Guest) error: %v", err)
+		t.Fatalf("GetHotPosts (Guest) error: %v", err)
 	}
 
 	if len(posts) != 1 || posts[0].ID != "789" {

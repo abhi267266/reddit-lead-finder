@@ -14,6 +14,7 @@ type Config struct {
 	RedditUsername     string
 	RedditPassword     string
 	Port               string
+	JWTSecret          string
 }
 
 func Load() *Config {
@@ -26,6 +27,7 @@ func Load() *Config {
 		RedditUsername:     os.Getenv("REDDIT_USERNAME"),
 		RedditPassword:     os.Getenv("REDDIT_PASSWORD"),
 		Port:               os.Getenv("PORT"),
+		JWTSecret:          os.Getenv("JWT_SECRET"),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -34,6 +36,10 @@ func Load() *Config {
 
 	if cfg.Port == "" {
 		cfg.Port = "8080"
+	}
+
+	if cfg.JWTSecret == "" {
+		cfg.JWTSecret = "super-secret-dev-jwt-key" // Default for local dev
 	}
 
 	return cfg

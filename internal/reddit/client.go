@@ -243,10 +243,10 @@ func (c *Client) SearchSubreddit(ctx context.Context, subreddit, keyword string)
 	u, _ := url.Parse(fmt.Sprintf("%s/r/%s/search", baseURL, subreddit))
 	q := u.Query()
 	q.Set("q", keyword)
-	q.Set("sort", "new")
+	q.Set("sort", "hot")
 	q.Set("restrict_sr", "true")
-	q.Set("limit", "25")
-	q.Set("t", "week")
+	q.Set("limit", "50")
+	q.Set("t", "month")
 	u.RawQuery = q.Encode()
 
 	resp, err := c.doRequest(ctx, "GET", u.String(), true)
@@ -267,25 +267,25 @@ func (c *Client) SearchSubreddit(ctx context.Context, subreddit, keyword string)
 	return posts, nil
 }
 
-func (c *Client) GetNewPosts(ctx context.Context, subreddit string) ([]Post, error) {
+func (c *Client) GetHotPosts(ctx context.Context, subreddit string) ([]Post, error) {
 	c.tokenMu.RLock()
 	baseURL := c.baseURL
 	c.tokenMu.RUnlock()
 
-	u, _ := url.Parse(fmt.Sprintf("%s/r/%s/new", baseURL, subreddit))
+	u, _ := url.Parse(fmt.Sprintf("%s/r/%s/hot", baseURL, subreddit))
 	q := u.Query()
-	q.Set("limit", "25")
+	q.Set("limit", "50")
 	u.RawQuery = q.Encode()
 
 	resp, err := c.doRequest(ctx, "GET", u.String(), true)
 	if err != nil {
-		return nil, fmt.Errorf("reddit.Client.GetNewPosts: %w", err)
+		return nil, fmt.Errorf("reddit.Client.GetHotPosts: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var list ListingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return nil, fmt.Errorf("reddit.Client.GetNewPosts json parse: %w", err)
+		return nil, fmt.Errorf("reddit.Client.GetHotPosts json parse: %w", err)
 	}
 
 	posts := make([]Post, 0, len(list.Data.Children))

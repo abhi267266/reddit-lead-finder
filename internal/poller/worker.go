@@ -7,15 +7,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abhi267266/reddit-lead-finder/internal/models"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/abhi267266/reddit-lead-finder/internal/db"
 	"github.com/abhi267266/reddit-lead-finder/internal/reddit"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DeduplicateAndFilter filters posts < 30 words and removes duplicates
-func DeduplicateAndFilter(posts []reddit.Post) []reddit.Post {
+// DeduplicateAndFilter removes duplicates and filters based on engagement, recency, and keywords
+func DeduplicateAndFilter(posts []reddit.Post, minUpvotes, minComments, maxAgeDays int32, keywords []string) []reddit.Post {
 	seen := make(map[string]struct{})
 	var result []reddit.Post
+
+	now := time.Now().Unix()
 
 	for _, p := range posts {
 		if _, ok := seen[p.ID]; ok {
@@ -23,25 +27,45 @@ func DeduplicateAndFilter(posts []reddit.Post) []reddit.Post {
 		}
 		seen[p.ID] = struct{}{}
 
-		wordCount := len(strings.Fields(p.Title)) + len(strings.Fields(p.Selftext))
-		if wordCount >= 30 {
+		// Check engagement
+		hasEngagement := int32(p.Score) >= minUpvotes || int32(p.NumComments) >= minComments
+		
+		// Check recency
+		ageSeconds := now - int64(p.CreatedUTC)
+		isRecent := ageSeconds <= int64(maxAgeDays)*24*3600
+
+		// Check keywords (case-insensitive)
+		hasKeyword := len(keywords) == 0
+		if !hasKeyword {
+			titleLower := strings.ToLower(p.Title)
+			bodyLower := strings.ToLower(p.Selftext)
+			for _, kw := range keywords {
+				kwLower := strings.ToLower(kw)
+				if strings.Contains(titleLower, kwLower) || strings.Contains(bodyLower, kwLower) {
+					hasKeyword = true
+					break
+				}
+			}
+		}
+
+		if hasEngagement && isRecent && hasKeyword {
 			result = append(result, p)
 		}
 	}
 	return result
 }
 
-func RunCampaign(ctx context.Context, db *pgxpool.Pool, redditClient *reddit.Client, campaign models.Campaign, job models.Job) {
+func RunCampaign(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, redditClient *reddit.Client, campaign db.Campaign, job db.Job) {
 	slog.Info("job started", "campaign_id", campaign.ID, "subreddits", len(campaign.Subreddits))
 
 	var allPosts []reddit.Post
 
 	for _, sub := range campaign.Subreddits {
-		newPosts, err := redditClient.GetNewPosts(ctx, sub)
+		hotPosts, err := redditClient.GetHotPosts(ctx, sub)
 		if err == nil {
-			allPosts = append(allPosts, newPosts...)
+			allPosts = append(allPosts, hotPosts...)
 		} else {
-			slog.Error("GetNewPosts failed", "subreddit", sub, "error", err)
+			slog.Error("GetHotPosts failed", "subreddit", sub, "error", err)
 		}
 
 		for _, kw := range campaign.Keywords {
@@ -54,54 +78,50 @@ func RunCampaign(ctx context.Context, db *pgxpool.Pool, redditClient *reddit.Cli
 		}
 	}
 
-	filteredPosts := DeduplicateAndFilter(allPosts)
+	filteredPosts := DeduplicateAndFilter(allPosts, campaign.MinUpvotes, campaign.MinComments, campaign.MaxAgeDays, campaign.Keywords)
 	insertedCount := 0
-
-	const insertLead = `
-		INSERT INTO raw_posts (campaign_id, reddit_post_id, title, body, author, subreddit, url, upvotes, comment_count, posted_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (campaign_id, reddit_post_id) DO NOTHING
-	`
 
 	for _, p := range filteredPosts {
 		postedAt := time.Unix(int64(p.CreatedUTC), 0)
 		
-		tag, err := db.Exec(ctx, insertLead,
-			campaign.ID,
-			p.ID,
-			p.Title,
-			p.Selftext,
-			p.Author,
-			p.Subreddit,
-			p.URL,
-			p.Score,
-			p.NumComments,
-			postedAt,
-		)
+		err := queries.CreateRawPost(ctx, db.CreateRawPostParams{
+			CampaignID:   campaign.ID,
+			RedditPostID: p.ID,
+			Title:        p.Title,
+			Body:         p.Selftext,
+			Author:       p.Author,
+			Subreddit:    p.Subreddit,
+			Url:          p.URL,
+			Upvotes:      int32(p.Score),
+			CommentCount: int32(p.NumComments),
+			PostedAt:      pgtype.Timestamptz{Time: postedAt, Valid: true},
+		})
+		
 		if err != nil {
 			slog.Error("job failed", "campaign_id", campaign.ID, "error", fmt.Errorf("poller.RunCampaign db insert: %w", err))
-			updateJobStatus(ctx, db, job.ID, "failed", err.Error(), campaign.ScheduleMinutes)
+			updateJobStatus(ctx, queries, job.ID, "failed", err.Error(), campaign.ScheduleMinutes)
 			return
 		}
-
-		if tag.RowsAffected() > 0 {
-			insertedCount++
-		}
+		insertedCount++
 	}
 
 	duplicates := len(allPosts) - insertedCount
 	slog.Info("posts fetched", "campaign_id", campaign.ID, "new", insertedCount, "dupes", duplicates)
 
-	updateJobStatus(ctx, db, job.ID, "completed", "", campaign.ScheduleMinutes)
+	updateJobStatus(ctx, queries, job.ID, "completed", "", campaign.ScheduleMinutes)
 }
 
-func updateJobStatus(ctx context.Context, db *pgxpool.Pool, jobID int, status, errorMsg string, scheduleMinutes int) {
-	const query = `
-		UPDATE jobs 
-		SET status = $1, error = $2, last_run_at = NOW(), next_run_at = NOW() + interval '1 minute' * $3, updated_at = NOW()
-		WHERE id = $4
-	`
-	_, err := db.Exec(ctx, query, status, errorMsg, scheduleMinutes, jobID)
+func updateJobStatus(ctx context.Context, queries *db.Queries, jobID int32, status, errorMsg string, scheduleMinutes int32) {
+	now := time.Now()
+	nextRun := now.Add(time.Duration(scheduleMinutes) * time.Minute)
+
+	err := queries.UpdateJobStatus(ctx, db.UpdateJobStatusParams{
+		Status:    status,
+		Error:     errorMsg,
+		LastRunAt: pgtype.Timestamptz{Time: now, Valid: true},
+		NextRunAt: pgtype.Timestamptz{Time: nextRun, Valid: true},
+		ID:        jobID,
+	})
 	if err != nil {
 		slog.Error("failed to update job status", "job_id", jobID, "error", err)
 	}
