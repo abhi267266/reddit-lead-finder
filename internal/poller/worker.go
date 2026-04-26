@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,7 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/abhi267266/reddit-lead-finder/internal/ai"
 	"github.com/abhi267266/reddit-lead-finder/internal/db"
+	"github.com/abhi267266/reddit-lead-finder/internal/models"
 	"github.com/abhi267266/reddit-lead-finder/internal/reddit"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -55,7 +58,7 @@ func DeduplicateAndFilter(posts []reddit.Post, minUpvotes, minComments, maxAgeDa
 	return result
 }
 
-func RunCampaign(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, redditClient *reddit.Client, campaign db.Campaign, job db.Job) {
+func RunCampaign(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, redditClient *reddit.Client, aiClient *ai.Client, campaign db.Campaign, job db.Job) {
 	slog.Info("job started", "campaign_id", campaign.ID, "subreddits", len(campaign.Subreddits))
 
 	var allPosts []reddit.Post
@@ -107,6 +110,77 @@ func RunCampaign(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, r
 
 	duplicates := len(allPosts) - insertedCount
 	slog.Info("posts fetched", "campaign_id", campaign.ID, "new", insertedCount, "dupes", duplicates)
+
+	// Step 2: AI Categorization
+	uncategorized, err := queries.ListUncategorizedPosts(ctx, campaign.ID)
+	if err != nil {
+		slog.Error("failed to list uncategorized posts", "campaign_id", campaign.ID, "error", err)
+	} else if len(uncategorized) > 0 {
+		var toCategorize []models.RawPost
+		for _, rp := range uncategorized {
+			toCategorize = append(toCategorize, models.RawPost{
+				ID:    int(rp.ID),
+				Title: rp.Title,
+				Body:  rp.Body,
+			})
+		}
+
+		slog.Info("categorizing posts", "campaign_id", campaign.ID, "count", len(toCategorize))
+		const batchSize = 10
+		for i := 0; i < len(toCategorize); i += batchSize {
+			end := i + batchSize
+			if end > len(toCategorize) {
+				end = len(toCategorize)
+			}
+			batch := toCategorize[i:end]
+
+			results, _, err := aiClient.CategorizeBatch(ctx, campaign.ProductDescription, batch)
+			if err != nil {
+				slog.Error("ai categorization failed for batch", "campaign_id", campaign.ID, "error", err)
+
+				// Determine retry timestamp for UI countdown
+				retryAtStr := ""
+				var rlErr *ai.RateLimitError
+				if errors.As(err, &rlErr) && rlErr.WaitDuration > 0 {
+					retryAtStr = time.Now().Add(rlErr.WaitDuration).Format(time.RFC3339)
+				}
+
+				for _, p := range batch {
+					_ = queries.UpdatePostAIFields(ctx, db.UpdatePostAIFieldsParams{
+						ID:        int32(p.ID),
+						Score:     0,
+						Category:  "error",
+						AiSummary: retryAtStr,
+						IsLead:    false,
+					})
+				}
+
+				// Still pace before next batch
+				if i+batchSize < len(toCategorize) {
+					time.Sleep(1500 * time.Millisecond)
+				}
+				continue
+			}
+
+			for _, res := range results {
+				err := queries.UpdatePostAIFields(ctx, db.UpdatePostAIFieldsParams{
+					ID:        int32(res.ID),
+					Score:     int32(res.Score),
+					Category:  res.Category,
+					AiSummary: res.Summary,
+					IsLead:    res.IsLead,
+				})
+				if err != nil {
+					slog.Error("failed to update ai fields", "post_id", res.ID, "error", err)
+				}
+			}
+
+			// Pace the batches to stay under Groq's free-tier rate limit
+			if i+batchSize < len(toCategorize) {
+				time.Sleep(1500 * time.Millisecond)
+			}
+		}
+	}
 
 	updateJobStatus(ctx, queries, job.ID, "completed", "", campaign.ScheduleMinutes)
 }

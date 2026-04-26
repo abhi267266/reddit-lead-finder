@@ -4,14 +4,15 @@ import (
 	"context"
 	"log/slog"
 	"time"
-
+	
+	"github.com/abhi267266/reddit-lead-finder/internal/ai"
 	"github.com/abhi267266/reddit-lead-finder/internal/db"
 	"github.com/abhi267266/reddit-lead-finder/internal/reddit"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 )
 
-func StartScheduler(ctx context.Context, pool *pgxpool.Pool, redditClient *reddit.Client) error {
+func StartScheduler(ctx context.Context, pool *pgxpool.Pool, redditClient *reddit.Client, aiClient *ai.Client) error {
 	queries := db.New(pool)
 	
 	// Initialize jobs for all active campaigns that don't have one
@@ -30,7 +31,7 @@ func StartScheduler(ctx context.Context, pool *pgxpool.Pool, redditClient *reddi
 	g.SetLimit(10)
 
 	// Trigger the first poll immediately
-	pollJobs(ctx, pool, queries, redditClient, g)
+	pollJobs(ctx, pool, queries, redditClient, aiClient, g)
 
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -40,12 +41,12 @@ func StartScheduler(ctx context.Context, pool *pgxpool.Pool, redditClient *reddi
 		case <-ctx.Done():
 			return g.Wait()
 		case <-ticker.C:
-			pollJobs(ctx, pool, queries, redditClient, g)
+			pollJobs(ctx, pool, queries, redditClient, aiClient, g)
 		}
 	}
 }
 
-func pollJobs(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, redditClient *reddit.Client, g *errgroup.Group) {
+func pollJobs(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, redditClient *reddit.Client, aiClient *ai.Client, g *errgroup.Group) {
 	jobs, err := queries.ListDueJobs(ctx)
 	if err != nil {
 		slog.Error("failed querying due jobs", "error", err)
@@ -79,7 +80,7 @@ func pollJobs(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, redd
 		}
 
 		g.Go(func() error {
-			RunCampaign(ctx, pool, queries, redditClient, campaign, job)
+			RunCampaign(ctx, pool, queries, redditClient, aiClient, campaign, job)
 			return nil
 		})
 	}

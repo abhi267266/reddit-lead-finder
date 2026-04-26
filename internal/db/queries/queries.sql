@@ -78,3 +78,20 @@ DELETE FROM raw_posts
 WHERE raw_posts.id = $1 AND raw_posts.campaign_id IN (
     SELECT campaigns.id FROM campaigns WHERE campaigns.user_id = $2
 );
+
+-- name: UpdatePostAIFields :exec
+UPDATE raw_posts
+SET score = $2, category = $3, ai_summary = $4, is_lead = $5
+WHERE id = $1;
+
+-- name: ListUncategorizedPosts :many
+SELECT * FROM raw_posts
+WHERE campaign_id = $1 AND (category = '' OR category = 'error')
+LIMIT 50;
+
+-- name: GetRawPostWithCampaign :many
+SELECT rp.id, rp.title, rp.body, rp.campaign_id, c.product_description
+FROM raw_posts rp
+JOIN campaigns c ON c.id = rp.campaign_id
+WHERE rp.id = $1 AND c.user_id = $2
+LIMIT 1;

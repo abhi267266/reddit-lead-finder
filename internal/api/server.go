@@ -39,4 +39,5 @@ func RegisterRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg *config.Config) 
 	mux.Handle("DELETE /api/campaigns/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteCampaign)))
 	mux.Handle("GET /api/campaigns/{id}/posts", s.requireAuth(http.HandlerFunc(s.handleListPosts)))
 	mux.Handle("DELETE /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.handleDeletePost)))
+	mux.Handle("POST /api/posts/{id}/categorize", s.requireAuth(http.HandlerFunc(s.handleRecategorizePost)))
 }

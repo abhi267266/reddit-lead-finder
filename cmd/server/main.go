@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abhi267266/reddit-lead-finder/internal/ai"
 	"github.com/abhi267266/reddit-lead-finder/internal/api"
 	"github.com/abhi267266/reddit-lead-finder/internal/config"
 	"github.com/abhi267266/reddit-lead-finder/internal/db"
@@ -54,10 +55,11 @@ func main() {
 	defer pool.Close()
 
 	redditClient := reddit.NewClient(cfg)
+	aiClient := ai.NewClient(cfg)
 
 	// Start poller scheduler
 	go func() {
-		if err := poller.StartScheduler(ctx, pool, redditClient); err != nil {
+		if err := poller.StartScheduler(ctx, pool, redditClient, aiClient); err != nil {
 			slog.Error("scheduler exited with error", "error", err)
 		}
 	}()
