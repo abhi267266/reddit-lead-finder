@@ -53,9 +53,8 @@ type RawPost struct {
 }
 
 type User struct {
-	ID           int32
-	Email        string
-	PasswordHash string
-	Plan         string
-	CreatedAt    pgtype.Timestamptz
+	ID        int32
+	Email     string
+	Plan      string
+	CreatedAt pgtype.Timestamptz
 }

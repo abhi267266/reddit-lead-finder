@@ -11,41 +11,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countCampaignAICategorized = `-- name: CountCampaignAICategorized :one
-SELECT COUNT(*) FROM raw_posts
-WHERE campaign_id = $1 AND category != '' AND category != 'error'
+const claimJob = `-- name: ClaimJob :one
+UPDATE jobs
+SET status = 'running', updated_at = NOW()
+WHERE id = (
+    SELECT j.id
+    FROM jobs j
+    JOIN campaigns c ON c.id = j.campaign_id
+    WHERE j.next_run_at <= NOW()
+    AND j.status != 'running'
+    AND c.active = true
+    ORDER BY j.next_run_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, campaign_id
 `
 
-func (q *Queries) CountCampaignAICategorized(ctx context.Context, campaignID int32) (int64, error) {
-	row := q.db.QueryRow(ctx, countCampaignAICategorized, campaignID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+type ClaimJobRow struct {
+	ID         int32
+	CampaignID int32
 }
 
-const countUserCampaigns = `-- name: CountUserCampaigns :one
-SELECT COUNT(*) FROM campaigns
-WHERE user_id = $1
-`
-
-func (q *Queries) CountUserCampaigns(ctx context.Context, userID int32) (int64, error) {
-	row := q.db.QueryRow(ctx, countUserCampaigns, userID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countUserTotalAICategorized = `-- name: CountUserTotalAICategorized :one
-SELECT COUNT(*) FROM raw_posts rp
-JOIN campaigns c ON c.id = rp.campaign_id
-WHERE c.user_id = $1 AND rp.category != '' AND rp.category != 'error'
-`
-
-func (q *Queries) CountUserTotalAICategorized(ctx context.Context, userID int32) (int64, error) {
-	row := q.db.QueryRow(ctx, countUserTotalAICategorized, userID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+func (q *Queries) ClaimJob(ctx context.Context) (ClaimJobRow, error) {
+	row := q.db.QueryRow(ctx, claimJob)
+	var i ClaimJobRow
+	err := row.Scan(&i.ID, &i.CampaignID)
+	return i, err
 }
 
 const createCampaign = `-- name: CreateCampaign :one
@@ -165,24 +157,22 @@ func (q *Queries) CreateRawPost(ctx context.Context, arg CreateRawPostParams) er
 }
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (email, password_hash, plan)
-VALUES ($1, $2, $3)
-RETURNING id, email, password_hash, plan, created_at
+INSERT INTO users (email, plan)
+VALUES ($1, $2)
+RETURNING id, email, plan, created_at
 `
 
 type CreateUserParams struct {
-	Email        string
-	PasswordHash string
-	Plan         string
+	Email string
+	Plan  string
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
-	row := q.db.QueryRow(ctx, createUser, arg.Email, arg.PasswordHash, arg.Plan)
+	row := q.db.QueryRow(ctx, createUser, arg.Email, arg.Plan)
 	var i User
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.PasswordHash,
 		&i.Plan,
 		&i.CreatedAt,
 	)
@@ -245,6 +235,54 @@ func (q *Queries) GetCampaign(ctx context.Context, arg GetCampaignParams) (Campa
 		&i.ScheduleMinutes,
 		&i.Active,
 		&i.CreatedAt,
+		&i.MinUpvotes,
+		&i.MinComments,
+		&i.MaxAgeDays,
+	)
+	return i, err
+}
+
+const getCampaignWithJob = `-- name: GetCampaignWithJob :one
+SELECT j.id, j.campaign_id, j.status, j.last_run_at, j.next_run_at, j.error, j.updated_at, c.name, c.keywords, c.subreddits, c.product_description, c.schedule_minutes, c.min_upvotes, c.min_comments, c.max_age_days
+FROM jobs j
+JOIN campaigns c ON c.id = j.campaign_id
+WHERE j.id = $1
+`
+
+type GetCampaignWithJobRow struct {
+	ID                 int32
+	CampaignID         int32
+	Status             string
+	LastRunAt          pgtype.Timestamptz
+	NextRunAt          pgtype.Timestamptz
+	Error              string
+	UpdatedAt          pgtype.Timestamptz
+	Name               string
+	Keywords           []string
+	Subreddits         []string
+	ProductDescription string
+	ScheduleMinutes    int32
+	MinUpvotes         int32
+	MinComments        int32
+	MaxAgeDays         int32
+}
+
+func (q *Queries) GetCampaignWithJob(ctx context.Context, id int32) (GetCampaignWithJobRow, error) {
+	row := q.db.QueryRow(ctx, getCampaignWithJob, id)
+	var i GetCampaignWithJobRow
+	err := row.Scan(
+		&i.ID,
+		&i.CampaignID,
+		&i.Status,
+		&i.LastRunAt,
+		&i.NextRunAt,
+		&i.Error,
+		&i.UpdatedAt,
+		&i.Name,
+		&i.Keywords,
+		&i.Subreddits,
+		&i.ProductDescription,
+		&i.ScheduleMinutes,
 		&i.MinUpvotes,
 		&i.MinComments,
 		&i.MaxAgeDays,
@@ -320,7 +358,7 @@ func (q *Queries) GetRawPostWithCampaign(ctx context.Context, arg GetRawPostWith
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, plan, created_at FROM users
+SELECT id, email, plan, created_at FROM users
 WHERE email = $1 LIMIT 1
 `
 
@@ -330,7 +368,6 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.PasswordHash,
 		&i.Plan,
 		&i.CreatedAt,
 	)
@@ -362,69 +399,6 @@ func (q *Queries) ListCampaignsByUser(ctx context.Context, userID int32) ([]Camp
 			&i.ScheduleMinutes,
 			&i.Active,
 			&i.CreatedAt,
-			&i.MinUpvotes,
-			&i.MinComments,
-			&i.MaxAgeDays,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listDueJobs = `-- name: ListDueJobs :many
-SELECT j.id, j.campaign_id, j.status, j.last_run_at, j.next_run_at, j.error, j.updated_at, c.name, c.keywords, c.subreddits, c.product_description, c.schedule_minutes, c.min_upvotes, c.min_comments, c.max_age_days
-FROM jobs j
-JOIN campaigns c ON c.id = j.campaign_id
-WHERE j.next_run_at <= NOW()
-AND j.status != 'running'
-AND c.active = true
-`
-
-type ListDueJobsRow struct {
-	ID                 int32
-	CampaignID         int32
-	Status             string
-	LastRunAt          pgtype.Timestamptz
-	NextRunAt          pgtype.Timestamptz
-	Error              string
-	UpdatedAt          pgtype.Timestamptz
-	Name               string
-	Keywords           []string
-	Subreddits         []string
-	ProductDescription string
-	ScheduleMinutes    int32
-	MinUpvotes         int32
-	MinComments        int32
-	MaxAgeDays         int32
-}
-
-func (q *Queries) ListDueJobs(ctx context.Context) ([]ListDueJobsRow, error) {
-	rows, err := q.db.Query(ctx, listDueJobs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListDueJobsRow
-	for rows.Next() {
-		var i ListDueJobsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.CampaignID,
-			&i.Status,
-			&i.LastRunAt,
-			&i.NextRunAt,
-			&i.Error,
-			&i.UpdatedAt,
-			&i.Name,
-			&i.Keywords,
-			&i.Subreddits,
-			&i.ProductDescription,
-			&i.ScheduleMinutes,
 			&i.MinUpvotes,
 			&i.MinComments,
 			&i.MaxAgeDays,

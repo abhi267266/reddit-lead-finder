@@ -2,12 +2,14 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 	
 	"github.com/abhi267266/reddit-lead-finder/internal/ai"
 	"github.com/abhi267266/reddit-lead-finder/internal/db"
 	"github.com/abhi267266/reddit-lead-finder/internal/reddit"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 )
@@ -47,21 +49,26 @@ func StartScheduler(ctx context.Context, pool *pgxpool.Pool, redditClient *reddi
 }
 
 func pollJobs(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, redditClient *reddit.Client, aiClient *ai.Client, g *errgroup.Group) {
-	jobs, err := queries.ListDueJobs(ctx)
-	if err != nil {
-		slog.Error("failed querying due jobs", "error", err)
-		return
-	}
-
-	for _, j := range jobs {
-		// Mark as running
-		_, err := pool.Exec(ctx, "UPDATE jobs SET status = 'running', updated_at = NOW() WHERE id = $1", j.ID)
+	for {
+		// Atomically claim the next due job using SKIP LOCKED
+		claimed, err := queries.ClaimJob(ctx)
 		if err != nil {
-			slog.Error("failed to lock job", "job_id", j.ID, "error", err)
+			if errors.Is(err, pgx.ErrNoRows) {
+				// No more due jobs to claim
+				return
+			}
+			slog.Error("failed to claim job", "error", err)
+			return
+		}
+
+		// Fetch the full campaign details for the claimed job
+		j, err := queries.GetCampaignWithJob(ctx, claimed.ID)
+		if err != nil {
+			slog.Error("failed to fetch campaign details for job", "job_id", claimed.ID, "error", err)
 			continue
 		}
 
-		// Convert sqlc row to models (or just pass the row if compatible)
+		// Convert sqlc row to models
 		job := db.Job{
 			ID:         j.ID,
 			CampaignID: j.CampaignID,

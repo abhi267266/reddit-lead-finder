@@ -57,9 +57,8 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		if err != nil {
 			// User not found (or DB error), lazy create
 			user, err = s.queries.CreateUser(r.Context(), db.CreateUserParams{
-				Email:        email,
-				PasswordHash: "", // Not used with Cognito
-				Plan:         "free",
+				Email: email,
+				Plan:  "free",
 			})
 			if err != nil {
 				http.Error(w, "internal error - failed to sync user", http.StatusInternalServerError)

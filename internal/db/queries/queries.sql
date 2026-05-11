@@ -1,6 +1,6 @@
 -- name: CreateUser :one
-INSERT INTO users (email, password_hash, plan)
-VALUES ($1, $2, $3)
+INSERT INTO users (email, plan)
+VALUES ($1, $2)
 RETURNING *;
 
 -- name: GetUserByEmail :one
@@ -46,13 +46,27 @@ VALUES ($1, $2, $3)
 ON CONFLICT (campaign_id) DO NOTHING
 RETURNING *;
 
--- name: ListDueJobs :many
+-- name: ClaimJob :one
+UPDATE jobs
+SET status = 'running', updated_at = NOW()
+WHERE id = (
+    SELECT j.id
+    FROM jobs j
+    JOIN campaigns c ON c.id = j.campaign_id
+    WHERE j.next_run_at <= NOW()
+    AND j.status != 'running'
+    AND c.active = true
+    ORDER BY j.next_run_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, campaign_id;
+
+-- name: GetCampaignWithJob :one
 SELECT j.*, c.name, c.keywords, c.subreddits, c.product_description, c.schedule_minutes, c.min_upvotes, c.min_comments, c.max_age_days
 FROM jobs j
 JOIN campaigns c ON c.id = j.campaign_id
-WHERE j.next_run_at <= NOW()
-AND j.status != 'running'
-AND c.active = true;
+WHERE j.id = $1;
 
 -- name: UpdateJobStatus :exec
 UPDATE jobs 
