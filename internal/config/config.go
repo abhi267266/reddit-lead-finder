@@ -9,14 +9,12 @@ import (
 
 type Config struct {
 	DatabaseURL        string
-	RedditClientID     string
-	RedditClientSecret string
 	RedditUsername     string
-	RedditPassword     string
 	GroqAPIKey         string
 	GroqModel          string
 	Port               string
-	JWTSecret          string
+	CognitoRegion      string
+	CognitoUserPoolID  string
 }
 
 func Load() *Config {
@@ -24,14 +22,12 @@ func Load() *Config {
 
 	cfg := &Config{
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		RedditClientID:     os.Getenv("REDDIT_CLIENT_ID"),
-		RedditClientSecret: os.Getenv("REDDIT_CLIENT_SECRET"),
 		RedditUsername:     os.Getenv("REDDIT_USERNAME"),
-		RedditPassword:     os.Getenv("REDDIT_PASSWORD"),
 		GroqAPIKey:         os.Getenv("GROQ_API_KEY"),
 		GroqModel:          os.Getenv("GROQ_MODEL"),
 		Port:               os.Getenv("PORT"),
-		JWTSecret:          os.Getenv("JWT_SECRET"),
+		CognitoRegion:      os.Getenv("COGNITO_REGION"),
+		CognitoUserPoolID:  os.Getenv("COGNITO_USER_POOL_ID"),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -50,8 +46,12 @@ func Load() *Config {
 		cfg.Port = "8080"
 	}
 
-	if cfg.JWTSecret == "" {
-		cfg.JWTSecret = "super-secret-dev-jwt-key" // Default for local dev
+	if cfg.CognitoRegion == "" {
+		log.Println("WARNING: COGNITO_REGION is not set.")
+	}
+	
+	if cfg.CognitoUserPoolID == "" {
+		log.Println("WARNING: COGNITO_USER_POOL_ID is not set.")
 	}
 
 	return cfg

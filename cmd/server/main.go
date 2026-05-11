@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -38,15 +36,7 @@ func main() {
 		cancel()
 	}()
 
-	// Run migrations via the migration script
-	slog.Info("Running migrations...")
-	cmd := exec.Command("bash", "migration.sh", "up")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), fmt.Sprintf("DATABASE_URL=%s", cfg.DatabaseURL))
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("Migration failed: %v", err)
-	}
+
 
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {

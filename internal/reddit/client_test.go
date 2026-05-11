@@ -6,26 +6,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/abhi267266/reddit-lead-finder/internal/config"
 )
 
 func TestClient_SearchSubreddit(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/access_token", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"access_token": "mock_token",
-			"expires_in":   3600,
-		})
-	})
 
-	mux.HandleFunc("/r/testsub/search", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer mock_token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
+	mux.HandleFunc("/r/testsub/search.json", func(w http.ResponseWriter, r *http.Request) {
+		// Verify parameters
 		if r.URL.Query().Get("q") != "keyword" {
-			t.Errorf("Expected q=keyword")
+			t.Errorf("Expected q=keyword, got %s", r.URL.Query().Get("q"))
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("Expected no Authorization header in guest mode")
 		}
 
 		resp := ListingResponse{
@@ -42,13 +37,10 @@ func TestClient_SearchSubreddit(t *testing.T) {
 	defer server.Close()
 
 	cfg := &config.Config{
-		RedditUsername:     "testuser",
-		RedditClientID:     "dummyid",
-		RedditClientSecret: "dummysecret",
+		RedditUsername: "testuser",
 	}
 
 	client := NewClient(cfg)
-	client.authURL = server.URL + "/api/v1/access_token"
 	client.baseURL = server.URL
 
 	posts, err := client.SearchSubreddit(context.Background(), "testsub", "keyword")
@@ -63,17 +55,10 @@ func TestClient_SearchSubreddit(t *testing.T) {
 
 func TestClient_GetHotPosts(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/access_token", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"access_token": "mock_token",
-			"expires_in":   3600,
-		})
-	})
 
-	mux.HandleFunc("/r/testsub/hot", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer mock_token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
+	mux.HandleFunc("/r/testsub/hot.json", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("Expected no Authorization header in guest mode")
 		}
 		resp := ListingResponse{
 			Data: ListingData{
@@ -89,13 +74,10 @@ func TestClient_GetHotPosts(t *testing.T) {
 	defer server.Close()
 
 	cfg := &config.Config{
-		RedditUsername:     "testuser",
-		RedditClientID:     "dummyid",
-		RedditClientSecret: "dummysecret",
+		RedditUsername: "testuser",
 	}
 
 	client := NewClient(cfg)
-	client.authURL = server.URL + "/api/v1/access_token"
 	client.baseURL = server.URL
 
 	posts, err := client.GetHotPosts(context.Background(), "testsub")
@@ -108,41 +90,28 @@ func TestClient_GetHotPosts(t *testing.T) {
 	}
 }
 
-func TestClient_GuestFallback(t *testing.T) {
+func TestClient_RateLimit(t *testing.T) {
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("/r/guestsub/hot.json", func(w http.ResponseWriter, r *http.Request) {
-		// There should be NO Authorization header in guest mode
-		if r.Header.Get("Authorization") != "" {
-			t.Errorf("Expected no Authorization header in guest mode")
-		}
-		resp := ListingResponse{
-			Data: ListingData{
-				Children: []PostChild{
-					{Data: Post{ID: "789", Title: "guest post"}},
-				},
-			},
-		}
-		json.NewEncoder(w).Encode(resp)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(ListingResponse{})
 	})
 
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	cfg := &config.Config{
-		RedditUsername: "testuser",
-		// NO ClientID or ClientSecret to force fallback
-	}
-
+	cfg := &config.Config{}
 	client := NewClient(cfg)
-	client.baseURL = server.URL // Override to local httptest server
+	client.baseURL = server.URL
 
-	posts, err := client.GetHotPosts(context.Background(), "guestsub")
-	if err != nil {
-		t.Fatalf("GetHotPosts (Guest) error: %v", err)
-	}
+	// Set count to limit to test the spin loop
+	client.reqCount = 12
 
-	if len(posts) != 1 || posts[0].ID != "789" {
-		t.Errorf("Unexpected posts: %+v", posts)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := client.GetHotPosts(ctx, "any")
+	if err == nil || ctx.Err() == nil {
+		t.Error("Expected context deadline exceeded error due to rate limit spin loop")
 	}
 }

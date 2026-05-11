@@ -2,9 +2,10 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
+	"strings"
 
+	"github.com/abhi267266/reddit-lead-finder/internal/db"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -17,20 +18,20 @@ const (
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("session_token")
-		if err != nil {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 			http.Error(w, "unauthorized - no token", http.StatusUnauthorized)
 			return
 		}
 
-		tokenString := cookie.Value
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(s.cfg.JWTSecret), nil
-		})
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
+		if s.jwks == nil {
+			http.Error(w, "unauthorized - auth not configured", http.StatusInternalServerError)
+			return
+		}
+
+		token, err := jwt.Parse(tokenString, s.jwks.Keyfunc)
 		if err != nil || !token.Valid {
 			http.Error(w, "unauthorized - invalid token", http.StatusUnauthorized)
 			return
@@ -42,18 +43,33 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Ensure typings are safe since JSON numbers are unmarshaled as float64 usually
-		userIDFloat, ok := claims["sub"].(float64)
+		// Cognito ID token usually has "email". Access token might not.
+		// Ensure frontend is passing the ID token, or we pull username/sub if it's an access token.
+		emailRaw, ok := claims["email"]
 		if !ok {
-			http.Error(w, "unauthorized - invalid user id", http.StatusUnauthorized)
+			http.Error(w, "unauthorized - missing email claim", http.StatusUnauthorized)
 			return
 		}
+		email := emailRaw.(string)
 
-		email, _ := claims["email"].(string)
+		// Lazy Sync: check if user exists in DB
+		user, err := s.queries.GetUserByEmail(r.Context(), email)
+		if err != nil {
+			// User not found (or DB error), lazy create
+			user, err = s.queries.CreateUser(r.Context(), db.CreateUserParams{
+				Email:        email,
+				PasswordHash: "", // Not used with Cognito
+				Plan:         "free",
+			})
+			if err != nil {
+				http.Error(w, "internal error - failed to sync user", http.StatusInternalServerError)
+				return
+			}
+		}
 
-		ctx := context.WithValue(r.Context(), ctxKeyUserID, int32(userIDFloat))
-		ctx = context.WithValue(ctx, ctxKeyEmail, email)
-		
+		ctx := context.WithValue(r.Context(), ctxKeyUserID, user.ID)
+		ctx = context.WithValue(ctx, ctxKeyEmail, user.Email)
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

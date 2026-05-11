@@ -1,8 +1,11 @@
 package api
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 
+	"github.com/MicahParks/keyfunc/v3"
 	"github.com/abhi267266/reddit-lead-finder/internal/config"
 	"github.com/abhi267266/reddit-lead-finder/internal/db"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,21 +16,29 @@ type Server struct {
 	pool    *pgxpool.Pool
 	queries *db.Queries
 	cfg     *config.Config
+	jwks    keyfunc.Keyfunc
 }
 
-// RegisterRoutes sets up all API handlers
 func RegisterRoutes(mux *http.ServeMux, pool *pgxpool.Pool, cfg *config.Config) {
+	var jwks keyfunc.Keyfunc
+	if cfg.CognitoRegion != "" && cfg.CognitoUserPoolID != "" {
+		jwksURL := fmt.Sprintf("https://cognito-idp.%s.amazonaws.com/%s/.well-known/jwks.json", cfg.CognitoRegion, cfg.CognitoUserPoolID)
+		kf, err := keyfunc.NewDefault([]string{jwksURL})
+		if err != nil {
+			log.Fatalf("Failed to create JWKS from URL: %s", err)
+		}
+		jwks = kf
+	} else {
+		log.Println("WARNING: Cognito variables not set, token validation will fail.")
+	}
+
 	s := &Server{
 		mux:     mux,
 		pool:    pool,
 		queries: db.New(pool),
 		cfg:     cfg,
+		jwks:    jwks,
 	}
-
-	// Unprotected routes
-	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
-	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 
 	// Protected routes
 	mux.Handle("GET /api/auth/me", s.requireAuth(http.HandlerFunc(s.handleMe)))
