@@ -1,4 +1,4 @@
-# 🔍 Reddit Lead Finder Monorepo
+# 🔍 Reddit Lead Finder
 
 Welcome to **Reddit Lead Finder**, an automated SaaS application that scans subreddits for high-engagement, high-intent posts matching keyword configurations to capture target audience leads seamlessly.
 
