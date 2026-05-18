@@ -1,29 +1,60 @@
-# Binaries
+# --- OS / IDE Specific ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- Backend (Go) ---
+# Binaries and template matching
 bin/
 /server
 *.exe
 *.test
 *.prof
+dist/
+vendor/
+*.log
 
-# Environment variables (Sensitive)
+# Backend Environment
 .env
 .env.local
 
-# Build artifacts
-dist/
-
+# --- Frontend (Next.js / Client) ---
 # Dependencies
-vendor/
+client/node_modules/
+client/.pnp
+client/.pnp.*
 
-# OS-specific
-.DS_Store
-Thumbs.db
+# Testing
+client/coverage/
 
-# Large log files
-*.log
+# Next.js Build Output
+client/.next/
+client/out/
+client/build/
+client/next-env.d.ts
+client/*.tsbuildinfo
 
-# Workspace
-.vscode/
-.idea/
-*.md
-client/
+# Frontend Environment
+client/.env
+client/.env*
+!client/.env.example
+
+# Client-specific meta/debug
+client/npm-debug.log*
+client/yarn-debug.log*
+client/yarn-error.log*
+client/.pnpm-debug.log*
+client/.agent/
+client/.vercel/
+client/AGENTS.md
+client/CLAUDE.md
+
+context.md
+deployment.md
+skills.md
