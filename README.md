@@ -28,6 +28,69 @@ reddit-lead-finder/
 
 ---
 
+## ⚡ Architecture Highlight: Distributed Queue with PostgreSQL `SKIP LOCKED`
+
+A standout feature of **Reddit Lead Finder** is its highly concurrent, distributed background scheduler. Instead of relying on complex, heavy external message brokers or key-value stores (such as Redis, RabbitMQ, or BullMQ) that increase hosting costs and setup overhead, this project implements a **native, lock-free distributed task queue** directly inside **PostgreSQL** using `FOR UPDATE SKIP LOCKED`.
+
+### 🔄 The Concurrency Challenge
+When running a SaaS in production, you typically scale your backend horizontally across multiple replicas (e.g., in a Kubernetes cluster or multiple serverless containers). If multiple backend containers attempt to run the campaign scheduler simultaneously:
+1. They might poll the database at the exact same millisecond.
+2. They could easily attempt to claim and run the *same* due campaign job concurrently.
+3. This leads to **duplicate API calls**, **wasted Reddit/OpenAI tokens**, and **corrupt/cluttered dashboard data**.
+
+---
+
+### 🛡️ The `SKIP LOCKED` Solution
+
+To address this cleanly, we leverage PostgreSQL's atomic row-level locking capabilities. When a scheduler worker polls for due jobs, it issues the following specialized `ClaimJob` transaction:
+
+```sql
+UPDATE jobs
+SET status = 'running', updated_at = NOW()
+WHERE id = (
+    SELECT j.id
+    FROM jobs j
+    JOIN campaigns c ON c.id = j.campaign_id
+    WHERE j.next_run_at <= NOW()
+      AND j.status != 'running'
+      AND c.active = true
+    ORDER BY j.next_run_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, campaign_id;
+```
+
+#### How it works under the hood:
+* **`FOR UPDATE`**: Instructs PostgreSQL to obtain an exclusive write-lock on the matching campaign job row. No other database transactions can read or write this row until the current worker commits.
+* **`SKIP LOCKED`**: This is the magic. If Worker A is currently processing/locking Job 1, and Worker B executes the exact same query a millisecond later, Worker B will **not block or wait** for Worker A. Instead, it **instantly ignores/skips** the locked Job 1, evaluates the rest of the list, and claims the next available ready job (Job 2).
+* **`LIMIT 1`**: Ensures that each worker thread only claims a single job at a time, distributing tasks evenly across workers.
+
+```mermaid
+sequenceDiagram
+    participant W1 as Worker Replica 1
+    participant DB as PostgreSQL
+    participant W2 as Worker Replica 2
+
+    Note over W1, W2: Both poll for due jobs concurrently
+    W1->>DB: ClaimJob() (FOR UPDATE SKIP LOCKED)
+    Note over DB: Locks Job 1 (Campaign A)
+    DB-->>W1: Returns Job 1 (Campaign A)
+    W2->>DB: ClaimJob() (FOR UPDATE SKIP LOCKED)
+    Note over DB: Sees Job 1 is locked. Skips it!<br/>Locks Job 2 (Campaign B)
+    DB-->>W2: Returns Job 2 (Campaign B)
+    
+    Note over W1: RunCampaign(A) concurrently with Worker 2
+    Note over W2: RunCampaign(B) concurrently with Worker 1
+```
+
+### 💎 Key Engineering Advantages
+1. **Exactly-Once Semantics**: Guarantees that a campaign is never run by more than one worker simultaneously, even under heavy scaling.
+2. **Zero Lock Contention**: Workers skip locked rows immediately. There are no deadlocks, no performance degradation, and no waiting threads.
+3. **No Infrastructure Bloat (Redis-Free)**: Keep your stack simple and robust. Your transactional database acts as your highly efficient queue broker, meaning easier migrations, backups, and lower operating costs.
+
+---
+
 ## 🛠 Prerequisites
 
 Ensure you have the following installed on your system:
